@@ -1,0 +1,12 @@
+{
+  "target": {
+    "name": "codal-microbit-v2",
+    "url": "https://github.com/lancaster-university/codal-microbit-v2",
+    "branch": "c849b8688144b44afe82406a21bbf5a374626249",
+    "type": "git"
+  },
+  "config": {
+    "MICROBIT_BLE_ENABLED": 0,
+    "MICROBIT_BLE_PAIRING_MODE": 0
+  }
+}
