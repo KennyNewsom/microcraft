@@ -184,10 +184,3 @@ exactly 32 KiB; runtime stack/heap high-water marks have not yet been instrument
 
 Next substantial milestone: replace the single active region with a bounded chunk
 cache backed by PC world pages, then add more gameplay within measured RAM limits.
-
-## Video outro
-
-The `video/` folder contains procedural Blender scripts for a six-second outro
-and original synthesized sound effects. See [video/README.md](video/README.md).
-Rendering the house requires a local saved world; saves and rendered media are
-excluded from this repository.
