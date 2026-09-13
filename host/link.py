@@ -41,7 +41,9 @@ class Link:
         try:
             if self.port.write(request) != SIZE:
                 raise LinkError('Short serial write')
-            deadline = time.monotonic() + self.timeout
+            # Circuit settling can touch every active edit. The startup echo gate
+            # retains its strict timeout; only stateful runtime work gets longer.
+            deadline = time.monotonic() + (max(self.timeout, 10.0) if self.ready and request[4] in (5, 27) else self.timeout)
             received = bytearray()
             while len(received) < SIZE and time.monotonic() < deadline:
                 received.extend(self.port.read(SIZE - len(received)))

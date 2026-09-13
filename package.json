@@ -5,6 +5,8 @@
   "description": "Minecraft PC transport with authoritative micro:bit v2 logic",
   "scripts": {
     "start": "node host/server.js",
+    "start:playit": "node host/server.js --playit",
+    "setup:versions": "node tools/setup_versions.js",
     "test-player": "node tools/test_player.js",
     "test": "python -m unittest discover -s tests -v && node --test tests/*.test.js"
   },

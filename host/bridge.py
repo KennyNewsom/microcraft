@@ -11,6 +11,7 @@ import threading
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.tools/python'))
 import serial
 from link import Link
+from chunks import ChunkStore, Pager
 
 
 def emit(message):
@@ -37,37 +38,16 @@ def main():
     with serial.Serial(args.port, 115200, timeout=0.05, write_timeout=1) as port:
         link = Link(port)
         report = link.boot(args.baud, lambda n: emit({'event': 'progress', 'packets': n}))
-        palette = json.loads((Path(__file__).parent / 'data/palette.json').read_text())
+        palette = json.loads((Path(__file__).parent / 'data/states.json').read_text())['states']
         capability = link.command(4)
         if int.from_bytes(capability[4:8], 'little') != len(palette):
             raise ValueError('Firmware palette differs from PC palette; flash the matching firmware')
-        if int.from_bytes(capability[8:12], 'little') != 2 or int.from_bytes(capability[12:16], 'little') != 2:
-            raise ValueError('Two-player firmware revision 2 is required')
-        world_path = Path('world/blocks.bin')
-        saved = None
-        if world_path.exists():
-            saved = world_path.read_bytes()
-            if len(saved) != 32768:
-                raise ValueError('World file must contain exactly 32768 bytes')
-            for offset in range(0, len(saved), 44):
-                link.command(7, struct.pack('<I', offset) + saved[offset:offset+44])
-        world = bytearray()
-        for offset in range(0, 32768, 48):
-            world.extend(link.command(6, struct.pack('<I', offset)))
-        del world[32768:]
-        if saved is not None:
-            if world != saved:
-                raise ValueError('MCU cache does not match the PC world after streaming')
-            emit({'event': 'restored', 'bytes': len(saved)})
-        world_path.parent.mkdir(exist_ok=True)
-
-        def save():
-            temporary = world_path.with_suffix('.tmp')
-            temporary.write_bytes(world)
-            temporary.replace(world_path)
-
-        save()
-        emit({'event': 'ready', 'report': report, 'world': base64.b64encode(world).decode()})
+        if (int.from_bytes(capability[8:12], 'little') != 5 or
+                int.from_bytes(capability[12:16], 'little') != 4 or
+                int.from_bytes(capability[20:24], 'little') != 100):
+            raise ValueError('Functional-block firmware revision 5 is required; flash the matching firmware')
+        pager = Pager(link, ChunkStore(Path(__file__).resolve().parents[1] / 'world'))
+        emit({'event': 'ready', 'report': report})
         while True:
             try:
                 request = inbox.get(timeout=0.2)
@@ -75,16 +55,25 @@ def main():
                 link.command(4)
                 continue
             if request is None:
+                pager.close()
                 break
             op = request['op']
-            if op not in (4, 5, 6, 8, 9, 10):
-                raise ValueError('Invalid network RPC')
             payload = bytes.fromhex(request.get('payload', ''))
-            response = link.command(op, payload)
-            if op == 5 and response[4]:
-                x, y, z, block = response[:4]
-                world[(y * 32 + z) * 32 + x] = block
-                save()
+            if op == 21:
+                actor, cx, cz = struct.unpack('<Bii', payload)
+                pager.view(actor, (cx, cz))
+                response = pager.settle()
+            elif op == 22:
+                response = pager.read(struct.unpack('<ii', payload))
+            elif op in (4, 5, 8, 9, 10):
+                response = link.command(op, payload)
+                if op == 5:
+                    response = pager.checkpoint_edit(response)
+                if op == 10:
+                    pager.view(payload[47])
+                    response = pager.settle()
+            else:
+                raise ValueError('Invalid network RPC')
             emit({'id': request['id'], 'payload': response.hex()})
 
 

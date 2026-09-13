@@ -4,8 +4,8 @@ const mc = require('minecraft-protocol')
 const { positionPacket } = require('../host/minecraft')
 
 test('movement bytes match vanilla 26.1 PositionMoveRotation, independently decoded', () => {
-  const pos = Buffer.alloc(6)
-  pos.writeInt16LE(320, 0); pos.writeInt16LE(544, 2); pos.writeInt16LE(640, 4)
+  const pos = Buffer.alloc(12)
+  pos.writeInt32LE(320, 0); pos.writeInt32LE(544, 4); pos.writeInt32LE(640, 8)
   const serializer = mc.createSerializer({ state: mc.states.PLAY, isServer: true, version: '26.1' })
   const raw = serializer.createPacketBuffer({ name: 'sync_entity_position', params: positionPacket(101, pos, 90, 15) })
   let offset = 0

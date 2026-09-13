@@ -4,26 +4,19 @@ const { once } = require('node:events')
 const mc = require('minecraft-protocol')
 const { createGame } = require('../host/minecraft')
 
-test('two clients see players, movement and shared edits; third refused and freed slot reused', { timeout: 15000 }, async () => {
-  const players = [null, null]
-  const actors = []
-  const rpc = async (op, p) => {
-    const actor = p[47]; actors.push([op, actor])
-    const b = Buffer.alloc(48)
-    if (op === 9) { players[actor] = [512 + actor * 64, 320, 512]; b[6] = 1 }
-    if (op === 8) { players[actor] = [p.readInt16LE(0), p.readInt16LE(2), p.readInt16LE(4)]; b[6] = 1 }
-    if (op === 5) { p.copy(b); b[4] = 1 }
-    else if (players[actor]) players[actor].forEach((v, i) => b.writeInt16LE(v, i * 2))
-    if (op === 10) players[actor] = null
-    return b
-  }
-  const server = createGame(rpc, Buffer.alloc(32768), { port: 0 })
+test('four clients see players and shared edits; fifth refused and freed slot reused', { timeout: 15000 }, async () => {
+  const { fakeMCU } = require('./helpers/fake-mcu')
+  const fake = fakeMCU()
+  const players = fake.players; const actors = fake.calls
+  const server = createGame(fake.rpc, null, { port: 0 })
   const clients = []
   try {
     await once(server, 'listening')
     const connect = name => {
       const c = mc.createClient({ host: '127.0.0.1', port: server.socketServer.address().port,
         username: name, auth: 'offline', version: '26.1' })
+      c.skinMetadata = []
+      c.on('entity_metadata', packet => c.skinMetadata.push(packet))
       clients.push(c); return c
     }
     const a = connect('PlayerOne'); await once(a, 'position')
@@ -38,14 +31,33 @@ test('two clients see players, movement and shared edits; third refused and free
     assert.equal((await moved)[0].x, 4)
     assert.deepEqual(players[0], [128, 320, 128])
     assert.deepEqual(players[1], [576, 320, 512])
+    for (const viewer of [a, b]) for (const entityId of [100, 101]) {
+      assert.ok(viewer.skinMetadata.some(p => p.entityId === entityId &&
+        p.metadata.some(m => m.key === 16 && m.type === 'byte' && m.value === 127)), 'Initial skin overlays reach self and peers')
+    }
+    const layerA = once(a, 'entity_metadata'); const layerB = once(b, 'entity_metadata')
+    a.write('settings', { locale: 'en_us', viewDistance: 2, chatFlags: 0, chatColors: true,
+      skinParts: 0, mainHand: 1, enableTextFiltering: false, enableServerListing: true })
+    for (const packet of [(await layerA)[0], (await layerB)[0]]) {
+      assert.equal(packet.entityId, 100)
+      assert.deepEqual(packet.metadata, [{ key: 16, type: 'byte', value: 0 }])
+    }
     const blockA = once(a, 'block_change'); const blockB = once(b, 'block_change')
     b.write('block_dig', { status: 0, location: { x: 18, y: 7, z: 16 }, face: 1, sequence: 1 })
     assert.deepEqual((await blockA)[0], (await blockB)[0])
     assert.ok(actors.some(([op, actor]) => op === 5 && actor === 1))
     const third = connect('PlayerThree')
-    const [kick] = await once(third, 'kick_disconnect')
-    assert.ok(JSON.stringify(kick).includes('two player slots'))
-    third.end('Done')
+    assert.equal((await once(third, 'position'))[0].x, 20)
+    const fourth = connect('PlayerFour')
+    assert.equal((await once(fourth, 'position'))[0].x, 22)
+    const shared = [a, b, third, fourth].map(c => once(c, 'block_change'))
+    fourth.write('block_dig', { status: 0, location: { x: 22, y: 7, z: 16 }, face: 1, sequence: 2 })
+    for (const result of await Promise.all(shared)) assert.equal(result[0].type, 0)
+    assert.ok(actors.some(([op, actor]) => op === 5 && actor === 3))
+    const fifth = connect('PlayerFive')
+    const [kick] = await once(fifth, 'kick_disconnect')
+    assert.ok(JSON.stringify(kick).includes('four player slots'))
+    fifth.end('Done')
     const removed = once(a, 'entity_destroy')
     b.end('Leaving'); assert.deepEqual((await removed)[0].entityIds, [101])
     // The MCU leave operation completes after queued work, before slot reuse.

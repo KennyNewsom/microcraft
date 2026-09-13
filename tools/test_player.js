@@ -18,7 +18,7 @@ try {
 const client = mc.createClient({ host: '127.0.0.1', port: 25565, version: '26.1',
   username: 'MicroBot', auth: 'offline' })
 let timer; let active = false; let tick = 0
-const startup = setTimeout(() => stop('Could not join within 15 seconds', 1), 15000)
+const startup = setTimeout(() => stop('Could not join within 90 seconds', 1), 90000)
 function stop (reason, code = 0) {
   clearTimeout(startup); clearInterval(timer)
   active = false

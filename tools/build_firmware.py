@@ -16,6 +16,9 @@ env['PYTHONPATH'] = str(root / '.tools/python')
 env['CMAKE_POLICY_VERSION_MINIMUM'] = '3.5'
 shutil.copyfile(root / 'firmware/main.cpp', codal / 'source/main.cpp')
 shutil.copyfile(root / 'firmware/Palette.h', codal / 'source/Palette.h')
+shutil.copyfile(root / 'firmware/World.h', codal / 'source/World.h')
+shutil.copyfile(root / 'firmware/States.h', codal / 'source/States.h')
+shutil.copyfile(root / 'firmware/Gameplay.h', codal / 'source/Gameplay.h')
 shutil.copyfile(root / 'firmware/codal.json', codal / 'codal.json')
 # The pinned CODAL driver omits 460800 despite the NRF52 hardware supporting it.
 driver = codal / 'libraries/codal-nrf52/source/NRF52Serial.cpp'

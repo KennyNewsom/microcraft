@@ -1,78 +1,72 @@
-# Microcraft serial protocol v1
+# Microcraft runtime protocol revision 5
 
-Every request and response is exactly 64 bytes. Integers are little-endian.
-The UART uses 8 data bits, no parity, one stop bit, and no flow control.
+Serial frames are 64 bytes: MCB1, opcode u8, reserved zero u8, length u16=48,
+sequence u32, payload[48], CRC32 u32 over bytes 0-59. Integers are little-endian.
+One request is outstanding at a time. Replies use opcode | 128; errors use 255.
+Framing, sequence, CRC, timeout, or echo failures halt until a physical reset.
+The PC must send traffic within the two-second MCU watchdog, including streaming.
+The PC allows up to ten seconds for edit/settle replies; other commands and the
+startup packet gate keep the normal one-second timeout. Failures are never retried.
 
-| Offset | Bytes | Field |
+## Startup
+
+At 115200 baud, op 1/sequence 0 carries a nonce[8] and requested baud u32. Both
+ends switch baud. Op 2/sequences 1-10000 must echo all 64 bytes exactly. Only then
+may op 3/sequence 10001 carry the nonce and enable runtime. This application gate
+does not replace DAPLink's bootloader.
+
+## Runtime commands
+
+Actor commands use payload byte 47 for slots 0 through 3. Player coordinates are signed
+**i32 fixed-point, 1/32 block units**. Block coordinates are signed i32 whole blocks.
+The previous i16/byte-coordinate runtime is incompatible.
+
+| Op | Request payload | Reply payload |
 | --- | --- | --- |
-| 0 | 4 | ASCII `MCB1` |
-| 4 | 1 | Opcode |
-| 5 | 1 | Flags, must be zero |
-| 6 | 2 | Payload size, always 48 |
-| 8 | 4 | Sequence number |
-| 12 | 48 | Payload, unused bytes padded with zeros by the host |
-| 60 | 4 | IEEE CRC-32 of bytes 0–59, matching Python `zlib.crc32` |
+| 4 | empty heartbeat | u32 fields: cache bytes, palette size=3685, revision=5, players=4, height=128, slots=100, edit count, edit capacity=3072 |
+| 5 | clicked x/y/z i32 at 0/4/8, state/item u16 at 12, action at 14 (0 diagnostic raw, 1 use/place, 2 break), face at 15, yaw at 16, cursor Y/X/Z at 17/18/19, sneak at 20, actor at 47 | actual edited x/y/z at 0/4/8; accepted at 13, current state low byte at 14 / high byte at 18, matches baseline at 15, reason at 16 (0 OK, 1 invalid, 2 RAM full), changed at 17, changed-slot bitmap at 20-32 |
+| 8 | x/y/z fixed-point i32 at 0/4/8, actor | authoritative coordinates; accepted at 12 |
+| 9 | actor | spawn coordinates i32 x3; accepted at 12 |
+| 10 | actor | success at 12 |
+| 11 | seed u32 | echo; allowed once after startup |
+| 12 | free slot u8, chunk x/z i32 at 1/5 | success at 0; assigns procedural descriptor |
+| 13 | slot u8, stream cursor u16 at 1 | next cursor u16, count u8, up to 15 pairs of run length u8 / state u16 at byte 3 |
+| 14 | slot u8, count u8, up to 11 index u16 / state u16 records at 2 | success at 0; restore deltas; capacity failure stops bridge without changing disk |
+| 15 | slot u8 | unload a clean chunk; dirty unload is fatal |
+| 16 | slot u8 | acknowledge completed PC save and clear dirty flag |
+| 17 | slot u8, hash-table cursor u16 | next cursor u16, count u8, dirty u8, up to 11 index u16 / state u16 records at byte 4 |
+| 27 | empty | settle shapes/power after paging; accepted at 13, changed at 17, changed-slot bitmap at 20-32 |
 
-The host sends one request at a time. It never retries after an uncertain result.
-HELLO and TEST return the exact original frame. Other successful replies use the
-request opcode OR 128 and the same sequence. Error replies use opcode 255.
+Yaw encodes a full turn in 256 units (0=south). Cursor coordinates range 0-255.
+Faces follow Minecraft's down/up/north/south/west/east order. State 65535 means
+empty or unsupported held item; it can interact but cannot place. IDs 0-254 retain
+their original meanings. `host/data/states.json` and generated `firmware/States.h`
+define the append-only mapping. Waterlogged states are not generated.
 
-| Opcode | Request | Response payload |
-| --- | --- | --- |
-| 1 HELLO | Sequence 0; 8-byte nonce, then 4-byte baud | Exact echo |
-| 2 TEST | Sequences 1–10000; varied 48-byte binary data | Exact echo |
-| 3 START | Sequence 10001; same nonce | Echoed payload; opcode 131 |
-| 4 HEARTBEAT | No arguments | Four uint32 values: cache bytes, palette entries, runtime revision (2), player slots (2) |
-| 5 EDIT | uint8 x, y, z, palette ID | Same four fields, then uint8 accepted |
-| 6 READ | uint32 cache offset | Up to 48 cache bytes, final page zero-padded |
-| 7 RESTORE | uint32 cache offset, then up to 44 saved bytes | Echoed payload |
-| 8 MOVE | Three int16 positions, units of 1/32 block | Accepted/current position, then uint8 accepted |
-| 9 JOIN | Player slot | Spawn position as three int16 values, then uint8 accepted |
-| 10 LEAVE | Player slot | accepted=1 at payload offset 6 |
+Chunk index is **(localZ * 16 + localX) * 128 + Y**, range 0-32767.
+Op 13 walks that order; runs may cross columns. Its end cursor is 32768.
+Op 17 scans the hash table; its end cursor is 4096. The PC validates run lengths,
+counts, palette IDs and cursors before using generated data.
 
-EDIT, MOVE, JOIN, and LEAVE select player slot 0 or 1 in payload byte 47 (frame
-byte 59). Other payload fields retain their existing offsets. The MCU rejects
-actions for inactive players and checks reach using the selected player's own
-position. An invalid slot number halts the link with error 14. JOIN rejects an
-already active slot; LEAVE deactivates it. The PC checks runtime revision and
-slot count before restoring the world. Gameplay packets from old bridges are
-not supported; install the matching PC code and firmware together.
+The fixed hash table has 4096 buckets capped at 3072 live deltas. Keys encode the
+chunk slot and local index in bits 0-21; bits 22-29 hold the high state byte. The
+existing byte value array holds the low state byte. The cache including its 13-byte
+changed-slot bitmap occupies 21,704 bytes. Back-shift deletion prevents tombstone buildup during
+repeated travel. Bedrock and reach checks are MCU decisions. A no-op edit does not
+become dirty; returning a block to its procedural value removes its delta.
 
-HELLO starts at 115200 baud. The board echoes it, waits 100 ms, then changes baud.
-The host waits 250 ms after receiving the echo before changing its port speed.
-115200, 230400, 460800, 921600 and 1000000 are accepted as requested test rates.
-Only use a rate that passes the startup gate. Runtime sequences continue at 10002.
+## PC-only RPCs
 
-The MCU rejects START unless all 10000 TEST requests were valid and ordered.
-The PC additionally verifies that all 10000 echoes were returned exactly. The MCU
-has a two-second request deadline after HELLO; the host has a one-second reply
-deadline. After any link error, reset the board to start another session.
+Node sends JSON lines to Python. Op 21 (slot u8, center chunk x/z i32) reconciles
+the union of four 5x5 views. Op 22 (chunk x/z i32) reads and decompresses a resident
+MCU chunk. These two opcodes are not sent to the serial wire. Leaving removes a
+player's view. View changes and edits are serialized; movement bursts coalesce.
+Op 22 returns 65,536 bytes of little-endian u16 states. Python appends changed
+chunk x/z i32 pairs after the 48-byte replies to edits, view changes, and leave.
+Node re-reads those chunks and broadcasts only their changed states.
 
-RESTORE is only permitted before the first JOIN, MOVE, or EDIT. Every restored
-block must use a valid palette ID, and the floor must remain bedrock. The host
-reads the cache back and checks it against the saved file before opening the
-Minecraft listener. There are no MCU filesystem or world-flash operations.
-
-Cache index: `(y * 32 + z) * 32 + x`. The append-only palette is recorded in
-`host/data/palette.json`: 0 air, 1 bedrock, 2 dirt, 3 grass block, 4 stone, followed
-by additional building materials through ID 254. ID 255 represents an unsupported
-item and is rejected by the MCU. The PC translates valid IDs into Java 26.1 block
-states. The firmware advertises its palette count in HEARTBEAT, and the bridge
-refuses to restore a world if its palette count differs. Old world bytes retain
-their meaning without migration. Never reorder existing palette entries.
-
-An ERROR response's first payload byte identifies the failure:
-
-| Code | Meaning |
-| --- | --- |
-| 1–3 | Bad HELLO frame, command/sequence, or requested baud |
-| 4–5 | TEST timeout/framing/CRC failure, or wrong TEST command/sequence |
-| 6–7 | Bad START frame, sequence, command, or nonce |
-| 8–9 | Runtime timeout/framing/CRC failure, or wrong sequence |
-| 10–11 | Invalid READ offset, or unsupported runtime command |
-| 12–13 | RESTORE outside loading phase/range, or invalid saved block |
-| 14 | Invalid player slot |
-
-The LED displays L while waiting/testing, S after START, and X when halted.
-The bridge uses an input queue capped at 32 commands and sends idle heartbeats
-every 200 ms. No game simulation proceeds after a latched serial failure.
+Eviction is snapshot, atomic save if dirty, op 16, then op 15. A save failure
+cannot authorize eviction. Accepted changed-block replies also checkpoint that
+affected chunks before network acknowledgment, including neighboring circuit states.
+Snapshots that match the saved deltas do not rewrite files. Only modified chunks are saved;
+clean generated terrain is discarded. Disk/link failures stop gameplay.

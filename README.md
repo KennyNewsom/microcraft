@@ -1,156 +1,156 @@
 # Microcraft
 
-Experimental Minecraft Java **26.1** prototype with C++ gameplay decisions on a
-micro:bit v2 and a PC providing serial transport, Minecraft protocol encoding,
-and persistent world storage. Geyser is not included.
+Experimental Minecraft Java **26.1 and 26.2** server with authoritative C++ game logic and
+terrain generation on a **micro:bit v2**. The PC handles USB transport, Minecraft
+network packets, version translation, and persistent storage. Geyser is not included.
 
-## Ownership
+## Server-list icon
 
-- **PC:** `world/blocks.bin` is the durable world, plus network framing, registries,
-  compression, and client connections. Saved blocks are streamed over USB at startup.
-- **micro:bit:** a fixed **32,768-byte RAM cache**, movement bounds, block reach,
-  palette validation, block edits, and first-world generation. No world data is
-  saved to the board's flash. Accepted edits are sent back to the PC for saving.
-- This first 32×32×32 world fits entirely in the active cache. It does **not** yet
-  page a larger world as a player moves. The remaining board RAM is for CODAL,
-  heap, stacks, serial buffers, and player state.
+Replace `server-icon.png` in the project folder with your own **64 x 64 PNG**
+(under 64 KiB). After starting the updated bridge, refresh Minecraft's server list
+to see changes; later icon replacements do not require a bridge restart. A missing
+or incorrectly sized image falls back to the bundled Microcraft badge. Optionally
+set `MICROCRAFT_ICON` to a different PNG path before launching the server.
 
-Two creative players can fly, break blocks, and place **254 block types**: wood,
-glass, colored wool/concrete/terracotta, stone variants, ores, metals, and more.
-The floor is immutable. Unsupported items are rejected and show an action-bar message.
-Directional blocks currently use their default orientation. Sand, gravel, and
-concrete powder stay where placed; block updates and falling physics are not simulated.
-There are no mobs,
-survival mechanics, crafting, redstone, fluids, collision simulation, or dynamic
-lighting. World coordinates are x/z 0–31 and y 0–31. Movement is bounded by the MCU.
-The network adapter uses full skylight for this prototype.
+The default logo combines a grass-topped circuit board with red M-shaped LEDs.
+Its editable source is `assets/microcraft-icon.svg`; `tools/build_server_icon.py`
+rebuilds the default PNG without overwriting an existing custom `server-icon.png`.
+
+## World generation and paging
+
+- The server fixes view distance at **2 chunks**: a 5 × 5 square per player.
+  Environmental fog starts at 6 blocks and becomes opaque at 14 blocks. Vanilla
+  needs neighboring chunks to render its outer sections, so the fog covers the
+  inner rendered edge (as close as 16 blocks), not just the loaded-chunk boundary.
+- Four players can explore independently. The micro:bit retains the union of their
+  views, up to **100 chunk descriptors**. A chunk unloads only when no player
+  needs it.
+- Each chunk is 16 × 16 blocks and **128 blocks high**. Custom seeded hills,
+  grass, dirt, stone, and coal ore are generated on the micro:bit. This is not
+  vanilla Minecraft's generator; there are no trees, structures, or caves yet.
+- The old 32 × 32 spawn area stays flat, with a gradual transition to hills.
+  Horizontal coordinates range from -1,000,000 through 999,999, including negatives.
+- Untouched terrain is **never saved to disk**. Once evicted, it is regenerated
+  deterministically from the fixed world seed when needed again.
+- Modified chunks are stored individually in `world/chunks-v1/<x>.<z>.json`.
+  Files contain the chunk's sparse block edits, rather than a redundant full terrain
+  array. Reloading streams those edits to the MCU, which reconstructs the chunk.
+- Before eviction, the PC reads the MCU's edits and atomically saves a dirty chunk.
+  Accepted changes also checkpoint **only affected chunks** immediately, protecting work
+  from PC crashes while it remains loaded. Circuit and paired-block changes include
+  their affected neighbors. A rejected or no-op edit creates no file.
+- `world/chunks-v1/world.json` records the seed and generator version. Keep it with
+  the chunk files. Generator version 1 must remain stable for regeneration.
+
+The MCU world cache occupies **21,704 bytes**, using fixed arrays and no application
+heap allocations. Its hash table supports **3,072 changed blocks across all active
+chunks**. Baseline terrain consumes no edit entries. Returning a block to its
+procedural value frees an entry. At capacity, new edits are rejected with an
+in-game message; leaving modified chunks frees their entries after saving them.
+If returning to an area requires more edits than RAM can hold, the bridge stops
+with a capacity error and preserves the saved files. There is no unlimited-memory
+fallback on the PC.
+
+The PC keeps temporary copies of visible MCU-produced chunks to encode network
+packets. It neither generates terrain nor authorizes edits. Overlapping player
+views reuse these copies to avoid duplicate serial transfers.
+
+## Existing worlds
+
+On the first start, the bridge migrates the legacy `world/blocks.bin` into separate
+modified-chunk files. The old file remains untouched as a backup. Its contents are
+not reimported after the chunk world's metadata has been created. New edits live
+in `world/chunks-v1/`, so back up that **entire directory** going forward.
 
 ## Setup and run
 
-You need a micro:bit v2, a USB data cable, Node.js, Python 3, and a Minecraft Java
-**26.1** client. Development used Node.js 24 and Python 3.14 on Windows.
-Install the PC dependencies with `npm ci --ignore-scripts` and
-`python -m pip install -r requirements.txt`, then build and flash the firmware
-using the instructions below.
-
-Find the board's serial port in Device Manager and set `MICROCRAFT_PORT` if it
-is not COM5. The MICROBIT drive is a flashing interface, not a world-storage disk.
-
-1. Stop any running copy of the bridge before restarting.
-2. Press the board's reset button. Wait for **L** on the LED display.
-3. In this project folder, run `npm start`.
-4. Wait for all **10,000 exact echoes** and saved-world restoration (about 80
-   seconds at the currently selected 230,400 baud).
-5. Connect a Minecraft Java **26.1** client to **localhost:25565**.
-
-The prototype listens on all IPv4 interfaces and uses offline authentication for
-LAN testing. On the second computer, use **your server PC's LAN IP:25565** with Java 26.1.
-Use distinct Minecraft usernames. Internet forwarding and authenticated multiplayer
-have not been configured. Keep this offline-mode prototype on a trusted LAN.
-`tools/enable-lan.ps1` is a firewall helper from the development setup; review
-and adjust its program path, local address, and subnet for your network before running it.
-Stop a foreground bridge with Ctrl+C. The board shows **X** after the host stops
-responding; reset it before the next run. **S** means the startup gate passed.
-
-`MICROCRAFT_PORT` overrides COM5. `MICROCRAFT_BAUD` can be `115200`, `230400`,
-`460800`, `921600`, or `1000000`. `MICROCRAFT_HOST=127.0.0.1` restricts listening
-to this PC. The server defaults to **230400**, the fastest tested passing speed.
-There is no automatic retry or fallback during startup.
+You need a micro:bit v2, a USB data cable, Node.js, Python 3, JDK 17 or newer,
+and a Minecraft Java **26.1 or 26.2** client. Set `JAVA_HOME` if your JDK is not
+on PATH. Development uses Windows, Node.js 24, Python 3.14, and JDK 26.
 
 ```powershell
+npm.cmd ci --ignore-scripts
+python -m pip install -r requirements.txt
+npm.cmd run setup:versions
+```
+
+Version compatibility starts automatically with the bridge. It uses the pinned
+[ViaProxy 3.4.12 release](https://github.com/ViaVersion/ViaProxy/releases/tag/v3.4.12)
+on the PC to translate 26.2 clients to the bridge's 26.1 protocol. The setup command
+verifies its SHA-256 and builds the included identity plugin. Both client versions
+can play together; this does not add 26.2 blocks or mechanics to the micro:bit.
+The proxy authenticates accounts in public mode and hands their profiles to a
+protected loopback backend. Signed chat, skins, and skin overlays are preserved.
+The configured port and playit tunnel still point to the public listener.
+
+Set `MICROCRAFT_COMPAT=false` to run the original direct 26.1 listener without
+Java. `node tools/probe_versions.js` exercises simultaneous clients through 26.1
+and actual 26.2 wire translation against a fake MCU, including signed chat.
+
+Build and flash the firmware below. Find the serial port in Device Manager; COM5
+is the default. The MICROBIT drive is a flashing interface, not world storage.
+
+1. Stop any existing bridge.
+2. Reset the board and wait for **L** on its display.
+3. Start from the project folder:
+
+```powershell
+$env:MICROCRAFT_PORT = 'COM5'
 $env:MICROCRAFT_BAUD = '230400'
-npm start
+npm.cmd start
 ```
 
-An independent high-speed test is available after resetting the board:
+4. Wait for **10,000 exact packet echoes** and the listener-ready message. The gate
+   takes about 69 seconds on the development board.
+5. Connect to `localhost:25565`, or the server PC's LAN IP from another computer.
+   Initial terrain streaming adds about **14 seconds** for a cold 25-chunk view on
+   the tested board. Moving across a chunk boundary streams the newly visible strip.
 
-```powershell
-python host/boot_test.py --port COM5 --baud 1000000
-```
+The server uses offline authentication for trusted LAN testing and supports four
+creative players with distinct usernames. Set `MICROCRAFT_HOST=127.0.0.1` to listen
+only locally. For authenticated external connections through playit.gg, use
+`npm.cmd run start:playit` and follow [the playit setup guide](docs/playit.md).
+Review the development addresses in `tools/enable-lan.ps1` before using it elsewhere.
+Use `npm.cmd` in PowerShell to avoid its script execution policy blocking `npm.ps1`.
 
-The test exits after checking the running firmware's RAM size; the firmware then
-halts when its host watchdog expires. Use `--hold` to keep sending heartbeats.
+`MICROCRAFT_BAUD` accepts 115200, 230400, 460800, 921600, or 1000000. On this board,
+230400 passes; higher tested rates fail the startup gate. There is no silent fallback.
+Stop with Ctrl+C and reset the MCU before restarting. **S** means startup passed;
+**X** means the link failed or the host stopped responding.
 
-## Startup gate
+## Gameplay limits
 
-This is an **application startup gate**, not a replacement for DAPLink's bootloader.
+Creative flight, block breaking and placement, immutable bedrock, per-player movement
+bounds, and MCU reach validation are implemented. The original 254 placeable block
+types are joined by 69 functional types, using 3,685 stable block states including air.
 
-1. PC and MCU exchange a session nonce and target baud at 115,200.
-2. Both switch to the requested baud.
-3. PC sends exactly 10,000 numbered 64-byte frames, one outstanding at a time.
-   Payloads cycle through zeros, ones, alternating bits, ramps, and random bytes.
-4. MCU validates framing, CRC-32, and order, then echoes the entire frame.
-5. PC checks every echoed byte. Loss, truncation, corruption, wrong sequence,
-   or a timeout latches failure. No server listener is created on failure.
-6. Only after all echoes match does the PC send START with the session nonce.
-7. PC restores the saved RAM cache, then opens the local Minecraft listener.
+- Wooden and iron doors have paired halves, rotation, hinges, and powered states.
+  Wooden doors and trapdoors toggle on right-click; iron versions require power.
+- Wood and selected stone slabs support bottom, top, and double placement. Stairs
+  rotate with the player, support upside-down placement, and form inner/outer corners.
+- Levers mount on floors, walls, and ceilings. Dust carries power with attenuation,
+  including one-block steps. Redstone blocks supply power; lamps and adjacent
+  doors/trapdoors respond. Sneak to place against an interactive block.
 
-The MCU requires ordered, CRC-protected requests during play as well. A two-second
-host watchdog halts it if the bridge disappears. The bridge closes the game server
-when serial communication fails. The host continues heartbeats with no player online.
+All placement, interaction, stair shape, and power calculations run on the micro:bit.
+The PC receives the resulting states, saves affected chunks, and updates viewers.
+Circuits settle immediately after edits and chunk-view changes. This is a simplified
+redstone model: no repeaters, comparators, pistons, delayed ticks, power through solid
+blocks, or waterlogging. Fixtures need full-block support (double slabs also work).
+Other directional blocks retain their default orientation. There are no mobs,
+crafting, survival, falling blocks, fluid simulation, collision simulation, or dynamic lighting.
+The client receives static full skylight. The 128-block build height is smaller than
+vanilla's overworld; the network dimension still uses vanilla registry definitions.
 
-Passing this test validates the tested stop-and-wait traffic pattern, not arbitrary
-continuous bursts or a guarantee that the link can never fail later.
-
-## Verification
-
-```powershell
-python -m unittest discover -s tests -v
-node --test tests/minecraft.test.js
-node tools/probe_server.js  # against a running local bridge, with no player joined
-node tools/probe_server.js --edits  # also checks PC persistence and restores the test block
-node tools/probe_server.js --palette  # checks new materials and the highest palette ID
-node tools/probe_two_clients.js  # real MCU: two players, independent reach, shared edits, reconnect
-```
-
-The Python tests exercise 10,000 successful echoes and injected drop, truncation,
-corruption, stale-response, and changed-payload failures. The Node integration test
-uses a Java 26.1 protocol client and a simulated MCU transport. The hardware probe
-checks real-board login, chunks, out-of-bounds movement rejection, and floor protection.
-These protocol tests do not replace visual testing in the official Minecraft client.
-
-Login includes vanilla registry tags from the installed Java 26.1 client. These
-are required even though the prototype does not simulate enchantments or other
-full-game mechanics. `python tools/generate_tags.py` regenerates the checked-in
-network tag data from `%APPDATA%/.minecraft/versions/26.1/26.1.jar`; an alternative
-26.1 JAR path can be passed as its first argument. The builder resolves nested tags
-against the exact registry IDs advertised by the PC bridge and rejects missing
-required entries. The login regression test checks tags arrive before configuration
-finishes, since a packet-only client otherwise misses vanilla registry-load errors.
-
-Measured on this board with 64-byte stop-and-wait frames:
-
-| Baud | Result |
-| --- | --- |
-| 115200 | Prior pass: 10,000 packets in 124.232 seconds |
-| 230400 | Pass: 10,000 in 69.713 seconds; live restart also passed in 69.304 seconds |
-| 460800 | Failed at sequence 1, 0/64 reply bytes |
-| 921600 | Failed at sequence 1, 0/64 reply bytes |
-| 1000000 | Failed at sequence 65, 14/64 reply bytes |
-
-Every failed run blocked startup. A real two-client test at 230400 also passed
-200 MCU-authorized movement commands in 1.440 seconds, plus independent reach
-checks, shared block edits, persistence, and slot reuse. These are measured test
-results, not guarantees for all future traffic. Local run logs are excluded from Git.
-
-The MCU has two fixed player slots, each with its own position and active flag.
-The PC assigns a slot to each connection; it broadcasts player entities and
-accepted block edits. A disconnected player's slot is not reused until its old
-queued actions finish and the MCU acknowledges LEAVE. A third client is refused.
-The world cache remains 32768 bytes, shared by both players.
-
-Player movement uses Java 26.1's `sync_entity_position` packet, including position,
-velocity, and float rotation fields. The dependency's legacy `entity_teleport`
-layout is incompatible with the official client and must not be used. The wire
-regression test decodes movement bytes independently of that library's decoder.
-
-Run `npm run test-player` to join a movement-only client named MicroBot. It circles
-above spawn, never edits blocks, and occupies one player slot. Stop a foreground
-test player with Ctrl+C. It does not automatically reconnect after server shutdown.
+`npm.cmd run test-player` joins a movement-only MicroBot which occupies the second
+slot. It never edits blocks. Close it to free that slot for another client.
 
 ## Build firmware
 
-Build helpers use project-local tools under `.tools/`:
+Firmware revision **5** is required for functional blocks; the bridge refuses older
+firmware. Existing chunk saves keep their original IDs and do not need conversion.
+Once new states are saved, use revision 5 or newer when reopening that world.
+The build helpers use project-local tools under `.tools/`:
 
 ```powershell
 python -m pip install --target .tools/python pyserial cmake
@@ -158,29 +158,45 @@ python -m pip install --target .tools/python --upgrade ninja
 git clone https://github.com/lancaster-university/microbit-v2-samples.git .tools/codal
 git -C .tools/codal checkout 04b7089d82af24534f3dcd460a9c343850b60b5d
 python tools/get_compiler.py
+node tools/build_states.js
 python tools/build_firmware.py
-npm ci --ignore-scripts
 ```
 
-Copy `build/MICROCRAFT.hex` onto the MICROBIT drive to replace the board's current
-program. Do not copy firmware onto a `MAINTENANCE` drive. The application C++ code
-is in `firmware/main.cpp`; `host/link.py` owns the strict link protocol.
+Copy `build/MICROCRAFT.hex` onto the **MICROBIT** drive, not a MAINTENANCE drive.
+The build patches the pinned CODAL driver's missing 460800 case; that does not
+mean the USB link passes at that speed. CODAL reserves a large heap in the linker
+report; the RAM-region percentage is not measured live application memory usage.
 
-The build helper adds the missing 460800 case to the pinned CODAL NRF52 driver's
-baud switch. This enables a real hardware rate selection instead of silently
-using 115200 for that requested value; it does not make this board's USB link
-pass the 460800-baud test.
+## Verification
 
-CODAL's linker reports include a large reserved heap, so its RAM-region percentage
-is not a measurement of live heap consumption. The application cache itself is
-exactly 32 KiB; runtime stack/heap high-water marks have not yet been instrumented.
+```powershell
+npm.cmd test
+node tools/probe_streaming.js  # offline test server, two free player slots; read-only
+node tools/probe_versions.js   # isolated 26.1/26.2 translation test, no MCU needed
+```
 
-## References
+The suite covers startup corruption/drop failures, save migration, modified-only
+persistence, save failure before eviction, four-player view unions, negative chunk
+coordinates, chunk unload packets, movement bursts, and Java configuration tags.
 
-- [micro:bit hardware](https://tech.microbit.org/hardware/)
-- [DAPLink and USB serial limitations](https://tech.microbit.org/software/daplink-interface/)
-- [CODAL C++ build sources](https://github.com/lancaster-university/microbit-v2-samples)
-- [Minecraft protocol implementation](https://github.com/PrismarineJS/node-minecraft-protocol)
+Optional tests execute the production C++ cache as ARM machine code in Unicorn,
+including wide-state cache eviction, atomic door placement, slab merging, stair
+corners, lever/dust attenuation, and powered lamps/doors/trapdoors:
 
-Next substantial milestone: replace the single active region with a bounded chunk
-cache backed by PC world pages, then add more gameplay within measured RAM limits.
+```powershell
+python -m pip install --target .tools/emulator unicorn pyelftools
+python -m unittest discover -s tests -p test_world_arm.py -v
+```
+
+With the server stopped and the board freshly reset, `python tools/probe_paging.py`
+runs the 10,000-packet gate and real hardware tests in a **temporary copy** of the
+old world: full migration readback, 100 slots, negative coordinates, independent
+player reach, saving, eviction, and regeneration. Reset again before starting the
+server. This probe defaults to COM5 and 230400 baud.
+
+Registry tags are checked in for Java 26.1. `python tools/generate_tags.py` rebuilds
+them from an installed 26.1 client JAR; pass a JAR path as its first argument when
+needed. The tests do not replace visual checking in the official Minecraft client.
+
+See [docs/protocol.md](docs/protocol.md) for serial operations. Local logs, saves,
+compiled firmware, dependencies, and generated media are excluded from Git.
