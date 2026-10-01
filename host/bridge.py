@@ -42,11 +42,17 @@ def main():
         capability = link.command(4)
         if int.from_bytes(capability[4:8], 'little') != len(palette):
             raise ValueError('Firmware palette differs from PC palette; flash the matching firmware')
-        if (int.from_bytes(capability[8:12], 'little') != 5 or
+        revision = int.from_bytes(capability[8:12], 'little')
+        if (revision not in (5, 6, 7) or
                 int.from_bytes(capability[12:16], 'little') != 4 or
                 int.from_bytes(capability[20:24], 'little') != 100):
-            raise ValueError('Functional-block firmware revision 5 is required; flash the matching firmware')
-        pager = Pager(link, ChunkStore(Path(__file__).resolve().parents[1] / 'world'))
+            raise ValueError('Firmware revision 5, 6 or 7 is required; flash the matching firmware')
+        buckets = int.from_bytes(capability[32:36], 'little') if revision >= 6 else 4096
+        compression = int.from_bytes(capability[44:48], 'little') if revision >= 7 else 0
+        pager = Pager(link, ChunkStore(Path(__file__).resolve().parents[1] / 'world'), buckets, revision >= 6, compression)
+        report.update(firmware_revision=revision, serial_compression=bool(compression & 1), cache_bytes=int.from_bytes(capability[:4], 'little'),
+                      edit_limit=int.from_bytes(capability[28:32], 'little'),
+                      runtime='bare-metal' if int.from_bytes(capability[40:44], 'little') else 'CODAL')
         emit({'event': 'ready', 'report': report})
         while True:
             try:

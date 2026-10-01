@@ -43,6 +43,7 @@ test('26.1 client completes configuration, receives chunks and MCU-authorized ed
     const errors = []
     client.on('error', e => errors.push(e))
     const [position] = await once(client, 'position')
+    assert.equal(client.compressionThreshold, 256, 'Vanilla-compatible zlib is negotiated for client traffic')
     assert.equal(position.x, 16)
     assert.equal(chunks, 25)
     assert.ok(tagsReceived)

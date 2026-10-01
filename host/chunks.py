@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import struct
+from serial_codec import encode_edits
 
 HEIGHT = 128
 SIZE = 16 * 16 * HEIGHT
@@ -79,18 +80,22 @@ class ChunkStore:
 
 
 class Pager:
-    def __init__(self, link, store):
+    def __init__(self, link, store, buckets=4096, streaming=False, compression=0):
         self.link, self.store = link, store
+        if buckets < 4096 or buckets > 32768 or buckets & (buckets-1):
+            raise ValueError('Invalid MCU cache capacity')
+        self.buckets, self.streaming = buckets, streaming
+        self.compression = compression
         self.views = {}
         self.loaded = {}
         self.link.command(11, struct.pack('<I', store.meta['seed']))
 
     def snapshot(self, slot):
         cursor, edits, dirty = 0, {}, False
-        while cursor < 4096:
+        while cursor < self.buckets:
             reply = self.link.command(17, struct.pack('<BH', slot, cursor))
             next_cursor, count, flag = struct.unpack_from('<HBB', reply)
-            if not cursor < next_cursor <= 4096 or count > 11:
+            if not cursor < next_cursor <= self.buckets or count > 11:
                 raise ValueError('Invalid MCU edit snapshot')
             for i in range(count):
                 index, block = struct.unpack_from('<HH', reply, 4+i*4)
@@ -130,10 +135,14 @@ class Pager:
             edits = self.store.load(key)
             self.link.command(12, struct.pack('<Bii', slot, *key))
             pairs = list((edits or {}).items())
-            for offset in range(0, len(pairs), 11):
-                batch = pairs[offset:offset+11]
-                payload = bytes([slot, len(batch)]) + b''.join(struct.pack('<HH', *p) for p in batch)
-                if not self.link.command(14, payload)[0]:
+            def legacy_edits():
+                for offset in range(0, len(pairs), 11):
+                    batch = pairs[offset:offset+11]
+                    yield bytes([slot, len(batch)]) + b''.join(struct.pack('<HH', *p) for p in batch)
+            compressed = bool(self.compression & 2)
+            payloads = encode_edits(slot, pairs, STATE_COUNT) if compressed else legacy_edits()
+            for payload in payloads:
+                if not self.link.command(20 if compressed else 14, payload)[0]:
                     raise ValueError('MCU edit RAM is full while restoring chunks; saved files remain intact')
             self.loaded[key] = {'slot': slot, 'edits': edits or {}}
 
@@ -141,9 +150,13 @@ class Pager:
         if key not in self.loaded:
             raise ValueError('Chunk is not in any active player view')
         slot = self.loaded[key]['slot']
+        if self.compression & 1:
+            return self.link.compressed_chunk(slot, STATE_COUNT)
         result = bytearray()
-        while len(result) < SIZE * 2:
-            response = self.link.command(13, struct.pack('<BH', slot, len(result)//2))
+        def polled():
+            while len(result) < SIZE*2:
+                yield self.link.command(13, struct.pack('<BH', slot, len(result)//2))
+        for response in (self.link.stream_chunk(slot) if self.streaming else polled()):
             next_cursor, count = struct.unpack_from('<HB', response)
             if not len(result)//2 < next_cursor <= SIZE or not 1 <= count <= 15:
                 raise ValueError('Invalid MCU terrain stream')
@@ -154,6 +167,8 @@ class Pager:
                 result.extend(struct.pack('<H', value)*length)
             if len(result)//2 != next_cursor:
                 raise ValueError('MCU terrain stream cursor mismatch')
+        if len(result) != SIZE*2:
+            raise ValueError('Incomplete MCU terrain stream')
         return bytes(result)
 
     def checkpoint_edit(self, response):

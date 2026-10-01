@@ -64,9 +64,10 @@ async function main () {
       assert.equal(status.favicon, require('../host/server-icon').iconProvider()())
     }
     const connect = (port, name) => { const c = mc.createClient({ host: '127.0.0.1', port, version: '26.1', username: name, auth: 'offline' }); c.on('error', e => { if (e.code !== 'ECONNRESET') console.error(e) }); clients.push(c); return c }
-    const a = connect(front, 'VersionOne'); await once(a, 'position')
+    const a = connect(front, 'VersionOne'); const timeA = once(a, 'update_time'); await once(a, 'position')
     const peer = once(a, 'spawn_entity')
     const b = connect(reverse, 'VersionTwo'); const metadata = []; b.on('entity_metadata', p => metadata.push(p))
+    const timeB = once(b, 'update_time')
     let checkedWide=false
     b.on('map_chunk', p => {
       if(checkedWide) return
@@ -76,6 +77,12 @@ async function main () {
     })
     if (process.env.PROBE_DEBUG) b.on('packet', (p, meta) => console.log('probe packet', meta.name))
     await once(b, 'position'); await peer
+    assert.equal(a.compressionThreshold, 256)
+    assert.equal(b.compressionThreshold, 256)
+    const clockA = (await timeA)[0]; const clockB = (await timeB)[0]
+    assert.deepEqual(clockB, clockA, 'Frozen daylight survives the 26.2 translation path')
+    assert.equal(BigInt(clockB.clockUpdates[0].totalTicks), 6000n)
+    assert.equal(clockB.clockUpdates[0].rate, 0)
     assert.ok(checkedWide, 'Powered and rotated states survive the 26.2 wire path')
     const moved = once(a, 'sync_entity_position')
     b.write('position', { x: 18, y: 10, z: 17, flags: {} }); assert.equal((await moved)[0].z, 17)

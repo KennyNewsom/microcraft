@@ -4,6 +4,12 @@ Experimental Minecraft Java **26.1 and 26.2** server with authoritative C++ game
 terrain generation on a **micro:bit v2**. The PC handles USB transport, Minecraft
 network packets, version translation, and persistent storage. Geyser is not included.
 
+The default firmware is now freestanding C++: no CODAL, SoftDevice, scheduler, or
+application heap. It uses the nRF52833's 128 KiB address space, with an explicit
+8 KiB stack reservation and hardware instruction cache enabled. USB still runs on
+the board's separate DAPLink interface processor. See [the measured performance
+and memory report](docs/performance.md); removing CODAL does not change the 64 MHz CPU clock.
+
 ## Server-list icon
 
 Replace `server-icon.png` in the project folder with your own **64 x 64 PNG**
@@ -42,8 +48,8 @@ rebuilds the default PNG without overwriting an existing custom `server-icon.png
 - `world/chunks-v1/world.json` records the seed and generator version. Keep it with
   the chunk files. Generator version 1 must remain stable for regeneration.
 
-The MCU world cache occupies **21,704 bytes**, using fixed arrays and no application
-heap allocations. Its hash table supports **3,072 changed blocks across all active
+The MCU world cache occupies **83,164 bytes**, using fixed arrays and no application
+heap allocations. Its hash table supports **12,288 changed blocks across all active
 chunks**. Baseline terrain consumes no edit entries. Returning a block to its
 procedural value frees an entry. At capacity, new edits are rejected with an
 in-game message; leaving modified chunks frees their entries after saving them.
@@ -101,10 +107,12 @@ npm.cmd start
 ```
 
 4. Wait for **10,000 exact packet echoes** and the listener-ready message. The gate
-   takes about 69 seconds on the development board.
+   takes about 65 seconds on the development board.
 5. Connect to `localhost:25565`, or the server PC's LAN IP from another computer.
-   Initial terrain streaming adds about **14 seconds** for a cold 25-chunk view on
-   the tested board. Moving across a chunk boundary streams the newly visible strip.
+   A 25-chunk MCU generation/serial-transfer benchmark takes about **2.62 seconds**
+   with revision-7 compression (see [measurements](docs/compression.md));
+   login also includes PC encoding, version translation, and client rendering.
+   Moving across a chunk boundary streams only the newly visible strip.
 
 The server uses offline authentication for trusted LAN testing and supports four
 creative players with distinct usernames. Set `MICROCRAFT_HOST=127.0.0.1` to listen
@@ -147,25 +155,41 @@ slot. It never edits blocks. Close it to free that slot for another client.
 
 ## Build firmware
 
-Firmware revision **5** is required for functional blocks; the bridge refuses older
-firmware. Existing chunk saves keep their original IDs and do not need conversion.
-Once new states are saved, use revision 5 or newer when reopening that world.
-The build helpers use project-local tools under `.tools/`:
+Firmware revision **7** adds lossless column-copy/RLE compression for chunk streams
+and compact saved-edit restores. It retains revision 6's bare-metal operation,
+larger cache, and streaming without per-packet PC round trips. The bridge also
+accepts revisions 5 and 6 with their previous wire formats; revision 5 has its old
+3,072-edit limit. Existing chunk saves keep their IDs and need no conversion.
+Returning to the smaller firmware can exceed its RAM limit if more edits are loaded.
+The MCU compressor uses 520 bytes of static scratch RAM and preserves all block
+states and saved builds. Minecraft clients already use standard zlib packet
+compression, so no client mod is required. See [the protocol](docs/protocol.md)
+for compression formats and bounds and [measured results](docs/compression.md).
+The default build needs only the project-local ARM compiler and Python:
 
 ```powershell
-python -m pip install --target .tools/python pyserial cmake
-python -m pip install --target .tools/python --upgrade ninja
-git clone https://github.com/lancaster-university/microbit-v2-samples.git .tools/codal
-git -C .tools/codal checkout 04b7089d82af24534f3dcd460a9c343850b60b5d
 python tools/get_compiler.py
 node tools/build_states.js
 python tools/build_firmware.py
 ```
 
 Copy `build/MICROCRAFT.hex` onto the **MICROBIT** drive, not a MAINTENANCE drive.
-The build patches the pinned CODAL driver's missing 460800 case; that does not
-mean the USB link passes at that speed. CODAL reserves a large heap in the linker
-report; the RAM-region percentage is not measured live application memory usage.
+The build emits an ELF, map, and `build/memory.json` beside the HEX. The linker
+rejects static allocations that overlap the reserved stack. The launcher does not
+reflash firmware or automatically reset the board.
+
+For the optional CODAL reference build:
+
+```powershell
+python -m pip install --target .tools/python pyserial cmake ninja
+git clone https://github.com/lancaster-university/microbit-v2-samples.git .tools/codal
+git -C .tools/codal checkout 04b7089d82af24534f3dcd460a9c343850b60b5d
+python tools/build_firmware.py --codal
+```
+
+This writes `build/MICROCRAFT-CODAL.hex` with the smaller cache. Add `--reference`
+to disable terrain fast paths for baseline measurements. Neither build changes
+DAPLink on the separate interface MCU.
 
 ## Verification
 

@@ -4,14 +4,16 @@ import subprocess
 import sys
 import unittest
 import json
+import struct
 
 ROOT = Path(__file__).resolve().parents[1]
 STATES = json.loads((ROOT/'host/data/states.json').read_text())
+STATE_COUNT = len(STATES['states'])
 GROUPS = {g['name']: g['start'] for g in STATES['groups']}
 sys.path.insert(0, str(ROOT / '.tools/emulator'))
 try:
     from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB
-    from unicorn.arm_const import UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3
+    from unicorn.arm_const import UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3
     from elftools.elf.elffile import ELFFile
 except ImportError:
     Uc = None
@@ -20,12 +22,13 @@ COMPILER = ROOT / '.tools/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin/arm-none-eabi-g
 
 @unittest.skipUnless(Uc and COMPILER.exists(), 'Optional ARM tests require project compiler, unicorn and pyelftools')
 class ARMWorldTests(unittest.TestCase):
+    capacity = 4096
     @classmethod
     def setUpClass(cls):
-        target = ROOT / 'build/world-test.elf'
+        target = ROOT / f'build/world-test-{cls.capacity}.elf'
         target.parent.mkdir(exist_ok=True)
         subprocess.run([str(COMPILER), '-mcpu=cortex-m4', '-mthumb', '-Os', '-nostdlib',
-                        '-fno-builtin', '-fno-exceptions', '-fno-rtti', '-Wl,-Ttext=0x100000',
+                        '-fno-builtin', '-fno-exceptions', '-fno-rtti', f'-DMICROCRAFT_CACHE_CAPACITY={cls.capacity}', '-Wl,-Ttext=0x100000',
                         '-Wl,-Tdata=0x20000000', '-Wl,--entry=init_world',
                         str(ROOT / 'tests/world_harness.cpp'), '-o', str(target)], check=True)
         cls.elf = target
@@ -54,6 +57,7 @@ class ARMWorldTests(unittest.TestCase):
         for reg, value in zip((UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3), args):
             self.cpu.reg_write(reg, value & 0xffffffff)
         self.cpu.emu_start(self.symbols[name] | 1, 0x10fff0, count=20000000)
+        self.assertEqual(self.cpu.reg_read(UC_ARM_REG_PC), 0x10fff0, 'ARM function exceeded instruction limit')
         return self.cpu.reg_read(UC_ARM_REG_R0)
 
     def test_wide_states_survive_hash_deletion_and_slot_unload(self):
@@ -129,7 +133,7 @@ class ARMWorldTests(unittest.TestCase):
 
     def test_door_capacity_failure_is_atomic(self):
         self.call('load_chunk', 0, 0, 0)
-        for i in range(3071): self.call('set_block', 0, i+16384, 65)
+        for i in range(self.capacity*3//4-1): self.call('set_block', 0, i+16384, 65)
         self.call('options', 1, 0, 128, 0)
         self.assertEqual(self.call('place', 3, 7, 3, GROUPS['oak_door']), 3)
         self.assertEqual(self.call('at', 3, 8, 3), 0)
@@ -156,7 +160,7 @@ class ARMWorldTests(unittest.TestCase):
         self.call('load_chunk', 1, -70, 90)
         self.assertEqual(first, [self.call('get_block', 1, y) for y in range(128)])
         self.assertIn(4, first)
-        self.assertLess(self.call('world_size'), 32768)
+        self.assertLess(self.call('world_size'), self.capacity*5+2048)
 
     def test_edit_eviction_isolation_and_capacity(self):
         for s in range(50): self.call('load_chunk', s, s, -s)
@@ -167,11 +171,12 @@ class ARMWorldTests(unittest.TestCase):
         self.assertEqual(self.call('used_edits'), 0)
 
         self.call('load_chunk', 0, 0, 0)
-        for i in range(3072): self.assertEqual(self.call('set_block', 0, i, 65), 1)
-        self.assertEqual(self.call('set_block', 0, 3073, 65), 0)
-        self.assertEqual(self.call('used_edits'), 3072)
+        limit = self.capacity*3//4
+        for i in range(limit): self.assertEqual(self.call('set_block', 0, i, 65), 1)
+        self.assertEqual(self.call('set_block', 0, limit+1, 65), 0)
+        self.assertEqual(self.call('used_edits'), limit)
         self.assertEqual(self.call('set_block', 0, 12, 0), 1)
-        self.assertEqual(self.call('set_block', 0, 3073, 65), 1)
+        self.assertEqual(self.call('set_block', 0, limit+1, 65), 1)
         self.call('unload_chunk', 0)
         self.assertEqual(self.call('used_edits'), 0)
 
@@ -185,3 +190,58 @@ class ARMWorldTests(unittest.TestCase):
             self.call('unload_chunk', 0)
             self.assertEqual(self.call('used_edits'), 200)
             for i in range(200): self.assertEqual(self.call('get_block', 1, i+64), 65)
+
+    def test_cpp_compressed_chunks_decode_exactly_in_python(self):
+        sys.path.insert(0,str(ROOT/'host'))
+        from serial_codec import decode_chunk_frame
+        for x,z in [(0,0),(-2,-2),(2,2)]:
+            self.call('load_chunk',0,x,z)
+            if x==0:
+                for index,state in [(8,3684),(9,255),(10,256),(128+8,3065)]:
+                    self.call('set_block',0,index,state)
+            self.call('codec_begin',0,0)
+            result=bytearray(); frames=0
+            while len(result)<65536:
+                cursor=self.call('codec_next'); frames+=1
+                payload=bytes(self.cpu.mem_read(self.symbols['codecPacket'],48))
+                self.assertEqual(decode_chunk_frame(payload,result,STATE_COUNT),cursor)
+                self.assertLess(frames,4000)
+            checksum=0
+            for (state,) in struct.iter_unpack('<H',result): checksum=(checksum*33+state)&0xffffffff
+            self.assertEqual(checksum,self.call('chunk_checksum',0))
+            if x==0:
+                self.assertLess(frames,10,'Flat repeated columns should collapse to a few frames')
+                self.assertEqual(struct.unpack_from('<H',result,128*2+16)[0],3065)
+            self.call('unload_chunk',0)
+        # Worst-case literals, wide IDs, long runs and alternating repeated columns.
+        for kind in (1,2,3):
+            self.call('codec_begin',0,kind); result=bytearray()
+            while len(result)<65536:
+                self.call('codec_next')
+                decode_chunk_frame(bytes(self.cpu.mem_read(self.symbols['codecPacket'],48)),result,STATE_COUNT)
+            expected=[]
+            for i in range(32768):
+                v=(i*2654435761)&0xffffffff; v^=v>>13
+                expected.append(3065 if kind==1 else (3684 if i%2 else 255) if kind==2 else v%STATE_COUNT)
+            self.assertEqual(result,struct.pack('<32768H',*expected))
+
+    def test_pc_compressed_edits_decode_in_cpp_before_application(self):
+        sys.path.insert(0,str(ROOT/'host'))
+        from serial_codec import encode_edits
+        self.call('load_chunk',0,0,0)
+        pairs=[(i,255+(i*31)%3000) for i in range(1,300) if i%128]
+        pairs += [(32767,3684)]
+        payloads=list(encode_edits(0,pairs,STATE_COUNT))
+        self.assertLess(len(payloads),(len(pairs)+10)//11)
+        for payload in payloads:
+            self.cpu.mem_write(self.symbols['codecPacket'],payload.ljust(48,b'\0'))
+            self.assertEqual(self.call('decode_edit_test'),1)
+        for index,state in pairs: self.assertEqual(self.call('get_block',0,index),state)
+        for malformed in [bytes([0,1,2,0,0]),bytes([0,1,3,128,0,4]),bytes([0,1,4,255,255,3,4]),
+                          bytes([0,2,4,30,4,0,255]),bytes([0,1,2,30,4])+b'\1']:
+            self.cpu.mem_write(self.symbols['codecPacket'],malformed.ljust(48,b'\0'))
+            self.assertEqual(self.call('decode_edit_test'),0)
+
+
+class BareMetalWorldTests(ARMWorldTests):
+    capacity = 16384

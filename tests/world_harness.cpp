@@ -1,5 +1,6 @@
 #include "../firmware/World.h"
 #include "../firmware/Gameplay.h"
+#include "../firmware/ChunkCodec.h"
 #include <new>
 extern "C" void *memset(void *p,int v,unsigned n) { auto b=(uint8_t*)p; while(n--) *b++=v; return p; }
 static World world;
@@ -18,3 +19,31 @@ extern "C" unsigned remove_block(int x,int y,int z) { uint8_t reason; Gameplay g
 extern "C" void settle() { Gameplay g(world); g.settle(); }
 extern "C" unsigned at(int x,int y,int z) { return world.at(x,y,z); }
 extern "C" unsigned put(int x,int y,int z,unsigned value) { return world.put(x,y,z,value); }
+static ChunkCodec codec;
+static unsigned codecSlot,fixtureKind;
+extern "C" uint8_t codecPacket[48];
+uint8_t codecPacket[48];
+struct Fixture {
+    uint16_t get(unsigned,unsigned i) {
+        if(fixtureKind==1) return 3065;
+        if(fixtureKind==2) return (i%128)%2 ? 3684 : 255;
+        uint32_t v=i*2654435761u; v^=v>>13; return v%STATE_COUNT;
+    }
+};
+extern "C" void codec_begin(unsigned slot,unsigned fixture) { codecSlot=slot; fixtureKind=fixture; codec.begin(); }
+extern "C" unsigned codec_next() {
+    Fixture fixture;
+    if(fixtureKind) codec.encode(fixture,codecSlot,codecPacket); else codec.encode(world,codecSlot,codecPacket);
+    return codec.cursor;
+}
+extern "C" unsigned chunk_checksum(unsigned slot) {
+    unsigned sum=0;
+    for(unsigned i=0;i<32768;++i) sum=sum*33+world.get(slot,i);
+    return sum;
+}
+extern "C" unsigned decode_edit_test() {
+    uint16_t indices[32],states[32];
+    if(!decodeEdits(codecPacket,indices,states,STATE_COUNT)) return 0;
+    for(unsigned i=0;i<codecPacket[1];++i) if(!world.set(codecPacket[0],indices[i],states[i],false)) return 0;
+    return 1;
+}

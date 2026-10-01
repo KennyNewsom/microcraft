@@ -11,7 +11,8 @@ from chunks import ChunkStore, Pager
 
 
 class Link:
-    def __init__(self):
+    def __init__(self, buckets=4096):
+        self.buckets = buckets
         self.slots = {}
         self.loads = []
 
@@ -31,7 +32,7 @@ class Link:
             entry = self.slots[slot]
             pairs = list(entry['edits'].items())
             batch = pairs[cursor:cursor+11]
-            struct.pack_into('<HBB', out, 0, cursor+11 if cursor+11 < len(pairs) else 4096, len(batch), entry['dirty'])
+            struct.pack_into('<HBB', out, 0, cursor+11 if cursor+11 < len(pairs) else self.buckets, len(batch), entry['dirty'])
             for i, pair in enumerate(batch): struct.pack_into('<HH', out, 4+4*i, *pair)
         if op == 16: self.slots[data[0]]['dirty'] = False
         if op == 15:
@@ -110,6 +111,15 @@ class ChunkTests(unittest.TestCase):
         pager.view(3)
         self.assertEqual(len(pager.loaded), 50)
         with self.assertRaises(ValueError): pager.view(4, (0, 0))
+
+    def test_large_cache_snapshot_uses_advertised_cursor_limit(self):
+        link=Link(16384); store=ChunkStore(self.root); pager=Pager(link,store,16384)
+        pager.view(0,(0,0)); slot=pager.loaded[(0,0)]['slot']
+        expected={i:3000+i%50 for i in range(1,5200) if i%128}
+        link.slots[slot]['edits']=expected; link.slots[slot]['dirty']=True
+        pager.evict((0,0))
+        self.assertEqual(store.load((0,0)),expected)
+        with self.assertRaises(ValueError): Pager(Link(),store,8193)
 
     def test_save_failure_prevents_eviction(self):
         pager = Pager(Link(), ChunkStore(self.root)); pager.view(0, (0, 0))

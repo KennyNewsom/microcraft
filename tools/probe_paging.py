@@ -27,9 +27,9 @@ def main():
             link = Link(port)
             print(link.boot(230400, lambda n: print(f'Gate: {n}/10000', flush=True)), flush=True)
             cap = struct.unpack('<12I', link.command(4))
-            assert cap[2:6] == (5, 4, 128, 100), cap
+            assert cap[2] in (5,6,7) and cap[3:6] == (4,128,100), cap
             print('Application cache bytes:', cap[0], 'edit limit:', cap[7], flush=True)
-            pager = Pager(link, ChunkStore(root))
+            pager = Pager(link, ChunkStore(root),cap[8] if cap[2]>=6 else 4096,cap[2]>=6,cap[11] if cap[2]>=7 else 0)
             for actor in range(4): assert link.command(9, actor_data(actor))[12]
             start = time.monotonic(); pager.view(0, (1, 1))
             for key in pager.loaded: pager.read(key)

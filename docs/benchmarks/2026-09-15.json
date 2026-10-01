@@ -1,0 +1,122 @@
+{
+  "codal_reference": {
+    "gate": {
+      "packets": 10000,
+      "baud": 230400,
+      "seconds": 68.556,
+      "wire_bytes_per_second": 18671.0
+    },
+    "capability": [
+      21724,
+      3685,
+      6,
+      4,
+      128,
+      100,
+      0,
+      3072,
+      4096,
+      0,
+      0,
+      0
+    ],
+    "streaming": false,
+    "stack_used": 0,
+    "descriptor_load_ms": 174.91150000000744,
+    "full_25_chunk_stream_ms": 17639.97889999996,
+    "samples": [
+      {
+        "chunk": [
+          0,
+          0
+        ],
+        "generation_ms": 115.732296875,
+        "stream_ms": 601.7381999999998,
+        "sha256": "99a926cc9b97d38a6d0b2a36d26f126b0bd5903b191d72ce72ad8c408f951305"
+      },
+      {
+        "chunk": [
+          -2,
+          -2
+        ],
+        "generation_ms": 117.22109375,
+        "stream_ms": 735.9180999999353,
+        "sha256": "299d0a66c95843aba6e85cac84b42296a50594291144927f004696d4cc86628e"
+      },
+      {
+        "chunk": [
+          2,
+          2
+        ],
+        "generation_ms": 118.22934375,
+        "stream_ms": 732.694400000014,
+        "sha256": "d75e7f5ebaecf6ff79a125125d2e846bdb30a81d89a93f52ca58d4d9875625f8"
+      }
+    ]
+  },
+  "baremetal_final": {
+    "gate": {
+      "packets": 10000,
+      "baud": 230400,
+      "seconds": 64.907,
+      "wire_bytes_per_second": 19720.6
+    },
+    "capability": [
+      83164,
+      3685,
+      6,
+      4,
+      128,
+      100,
+      0,
+      12288,
+      16384,
+      232,
+      1,
+      0
+    ],
+    "streaming": true,
+    "stack_used": 560,
+    "capacity_test": true,
+    "descriptor_load_ms": 169.08779999994294,
+    "full_25_chunk_stream_ms": 6801.137200000085,
+    "samples": [
+      {
+        "chunk": [
+          0,
+          0
+        ],
+        "generation_ms": 18.202,
+        "stream_ms": 228.00839999990785,
+        "sha256": "99a926cc9b97d38a6d0b2a36d26f126b0bd5903b191d72ce72ad8c408f951305"
+      },
+      {
+        "chunk": [
+          -2,
+          -2
+        ],
+        "generation_ms": 20.997515625,
+        "stream_ms": 287.1172000000115,
+        "sha256": "299d0a66c95843aba6e85cac84b42296a50594291144927f004696d4cc86628e"
+      },
+      {
+        "chunk": [
+          2,
+          2
+        ],
+        "generation_ms": 19.880375,
+        "stream_ms": 282.5376000000688,
+        "sha256": "d75e7f5ebaecf6ff79a125125d2e846bdb30a81d89a93f52ca58d4d9875625f8"
+      }
+    ]
+  },
+  "memory": {
+    "runtime": "bare-metal",
+    "physical_ram": 131072,
+    "static_ram": 83404,
+    "reserved_stack": 8192,
+    "free_gap": 39476,
+    "edit_limit": 12288,
+    "cache_buckets": 16384
+  }
+}

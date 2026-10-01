@@ -1,15 +1,16 @@
-#include "MicroBit.h"
+#include "Platform.h"
 #include "Palette.h"
 #include "World.h"
 #include "Gameplay.h"
+#include "ChunkCodec.h"
 #include <cstring>
 
-MicroBit uBit;
-// No heap allocations in application logic; CODAL has its own runtime budget.
+// The same protocol/game logic runs with either platform, without heap allocation.
 static uint8_t packet[64];
 static uint8_t nonce[8];
 static World world;
 static Gameplay gameplay(world);
+static ChunkCodec chunkCodec;
 static uint32_t expected = 0;
 static bool running = false;
 static bool configured = false;
@@ -32,7 +33,7 @@ static uint32_t crc(const uint8_t *p, int n) {
 }
 static void send() {
     put32(packet + 60, crc(packet, 60));
-    uBit.serial.send(packet, 64, SYNC_SPINWAIT);
+    if(!Platform::send(packet)) Platform::halt('X');
 }
 static void fail(uint8_t code) {
     running = false;
@@ -40,38 +41,25 @@ static void fail(uint8_t code) {
     memset(packet + 12, 0, 48);
     packet[12] = code;
     send();
-    uBit.display.print('X');
-    // Physical reset required after any link failure. Never retry silently.
-    while (true) uBit.sleep(1000);
+    Platform::halt('X');
 }
 static bool receive(bool initial) {
-    unsigned got = 0;
-    uint64_t start = system_timer_current_time();
-    while (got < sizeof(packet)) {
-        int c = uBit.serial.read(ASYNC);
-        if (c >= 0) packet[got++] = c;
-        else if (got == 0 && initial) uBit.sleep(1);
-        if ((!initial || got) && system_timer_current_time() - start > 2000) return false;
-        if (initial && got == 0) start = system_timer_current_time();
-    }
+    if(!Platform::receive(packet,initial)) return false;
     return memcmp(packet, "MCB1", 4) == 0 && packet[5] == 0 && packet[6] == 48 && packet[7] == 0
         && get32(packet + 60) == crc(packet, 60);
 }
 
 int main() {
-    uBit.init();
-    uBit.serial.setRxBufferSize(254);
-    uBit.serial.setTxBufferSize(128);
-    uBit.serial.setBaud(115200);
-    uBit.display.print('L');
+    Platform::init();
+    Platform::display('L');
     if (!receive(true)) fail(1);
     if (packet[4] != 1 || get32(packet + 8) != 0) fail(2);
     memcpy(nonce, packet + 12, 8);
     uint32_t baud = get32(packet + 20);
     if (baud != 115200 && baud != 230400 && baud != 460800 && baud != 921600 && baud != 1000000) fail(3);
     send();
-    uBit.sleep(100);
-    if (uBit.serial.setBaud(baud) != DEVICE_OK) fail(3);
+    Platform::delay(100);
+    if (!Platform::baud(baud)) fail(3);
     for (expected = 1; expected <= 10000; ++expected) {
         if (!receive(false)) fail(4);
         if (packet[4] != 2 || get32(packet + 8) != expected) fail(5);
@@ -82,7 +70,7 @@ int main() {
     running = true;
     packet[4] = 131;
     send();
-    uBit.display.print('S');
+    Platform::display('S');
     ++expected;
     while (running) {
         // Host must keep polling at least every 2 seconds, even without players.
@@ -96,9 +84,14 @@ int main() {
         if(op==4) {
             memset(p,0,48);
             put32(p,sizeof(world)); put32(p+4,STATE_COUNT);
-            put32(p+8,5); put32(p+12,4); put32(p+16,World::HEIGHT);
+            put32(p+8,7); put32(p+12,4); put32(p+16,World::HEIGHT);
             put32(p+20,World::SLOTS); put32(p+24,world.used);
             put32(p+28,World::CAPACITY*3/4);
+            put32(p+32,World::CAPACITY); put32(p+36,Platform::stackUsed());
+#ifdef MICROCRAFT_BAREMETAL
+            put32(p+40,1);
+#endif
+            put32(p+44,3); // Column/RLE chunk codec and compact edit restore.
         } else if(op==11) {
             if(configured) fail(12);
             world.seed=get32(p); configured=true;
@@ -108,9 +101,22 @@ int main() {
                x < -62500 || x > 62499 || z < -62500 || z > 62499 || world.find(x,z)>=0) fail(12);
             world.chunks[slot]={x,z,true,false};
             memset(p,0,48); p[0]=1;
-        } else if(op==13) {
+        } else if(op==19) {
+            unsigned slot=p[0];
+            if(slot>=World::SLOTS || !world.chunks[slot].active || p[1] || p[2]) fail(12);
+            chunkCodec.begin();
+            do { chunkCodec.encode(world,slot,p); packet[4]=op|128; send(); } while(chunkCodec.cursor<32768);
+            continue;
+        } else if(op==20) {
+            unsigned slot=p[0],count=p[1]; uint16_t indices[32],states[32];
+            if(slot>=World::SLOTS || !world.chunks[slot].active || !decodeEdits(p,indices,states,STATE_COUNT)) fail(13);
+            bool ok=true;
+            for(unsigned i=0;i<count;++i) if(!world.set(slot,indices[i],states[i],false)) { ok=false; break; }
+            memset(p,0,48); p[0]=ok;
+        } else if(op==13 || op==18) {
             unsigned slot=p[0], cursor=p[1]|unsigned(p[2])<<8;
             if(slot>=World::SLOTS || !world.chunks[slot].active || cursor>32768) fail(12);
+            do {
             memset(p,0,48); unsigned count=0;
             while(cursor<32768 && count<15) {
                 uint16_t value=world.get(slot,cursor); unsigned length=1;
@@ -118,6 +124,9 @@ int main() {
                 p[3+count*3]=length; p[4+count*3]=value; p[5+count*3]=value>>8; ++count; cursor+=length;
             }
             p[0]=cursor; p[1]=cursor>>8; p[2]=count;
+            if(op==18) { packet[4]=op|128; send(); }
+            } while(op==18 && cursor<32768);
+            if(op==18) continue;
         } else if(op==14) {
             unsigned slot=p[0],count=p[1];
             if(slot>=World::SLOTS || !world.chunks[slot].active || count>11) fail(12);
@@ -169,6 +178,20 @@ int main() {
             p[13]=valid; p[14]=value; p[18]=value>>8;
             p[15]=slot>=0 && value==world.base(slot,index); p[16]=reason;
             for(unsigned i=0;i<13;i++) { p[20+i]=world.changed[i]; if(world.changed[i]) p[17]=1; }
+        } else if(op==29) {
+            unsigned slot=p[0];
+            if(slot>=World::SLOTS || !world.chunks[slot].active) fail(12);
+            uint32_t start=Platform::cycles(),checksum=0;
+            for(unsigned i=0;i<32768;++i) checksum=checksum*33+world.get(slot,i);
+            uint32_t elapsed=Platform::cycles()-start;
+            memset(p,0,48); put32(p,elapsed); put32(p+4,checksum);
+        } else if(op==30) {
+            // Maintenance reset is only allowed after all player views are saved
+            // and unloaded. The public bridge never forwards this opcode.
+            for(const auto &c:world.chunks) if(c.active) fail(12);
+            for(const auto &player:players) if(player.active) fail(12);
+            if(world.used) fail(12);
+            memset(p,0,48); packet[4]=op|128; send(); Platform::delay(20); Platform::reset();
         } else if(op==27) {
             world.clearChanges(); gameplay.settle(); memset(p,0,48); p[13]=1;
             for(unsigned i=0;i<13;i++) { p[20+i]=world.changed[i]; if(world.changed[i]) p[17]=1; }

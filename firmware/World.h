@@ -1,18 +1,25 @@
 #pragma once
 #include <stdint.h>
 #include <string.h>
+#ifndef MICROCRAFT_CACHE_CAPACITY
+#define MICROCRAFT_CACHE_CAPACITY 4096
+#endif
 
 // Procedural chunks retain only edits. No heap or PC-side terrain generation.
 struct World {
-    static const unsigned HEIGHT = 128, SLOTS = 100, CAPACITY = 4096;
+    static const unsigned HEIGHT = 128, SLOTS = 100, CAPACITY = MICROCRAFT_CACHE_CAPACITY;
+    static_assert(CAPACITY>=4096 && CAPACITY<=32768 && !(CAPACITY&(CAPACITY-1)), "Power-of-two cache required");
     static const uint32_t EMPTY = 0xffffffffu, DELETED = 0xfffffffeu;
     static const uint32_t KEY_MASK = 0x003fffffu;
-    struct Chunk { int32_t x, z; bool active, dirty; } chunks[SLOTS];
+    struct Chunk { int32_t x, z; bool active, dirty; uint16_t edits; } chunks[SLOTS];
     uint32_t keys[CAPACITY];
     uint8_t values[CAPACITY];
     uint32_t seed;
     unsigned used;
     uint8_t changed[13];
+    mutable int32_t cachedX=INT32_MAX,cachedZ=INT32_MAX;
+    mutable uint32_t cachedSeed=0,cachedOre=0;
+    mutable int cachedHeight=0;
     World() : seed(0x4d435246), used(0) {
         memset(chunks, 0, sizeof(chunks));
         memset(keys, 255, sizeof(keys));
@@ -39,12 +46,24 @@ struct World {
         int y=index%HEIGHT, column=index/HEIGHT;
         int32_t x=chunks[slot].x*16+column%16, z=chunks[slot].z*16+column/16;
         if (y==0) return 1;
+#ifdef MICROCRAFT_REFERENCE_TERRAIN
         int h=height(x,z);
+#else
+        if(x!=cachedX || z!=cachedZ || seed!=cachedSeed) {
+            cachedX=x; cachedZ=z; cachedSeed=seed; cachedHeight=height(x,z);
+            cachedOre=noise(floorDiv(x,3),floorDiv(z,3));
+        }
+        int h=cachedHeight;
+#endif
         if (y>h) return 0;
         if (y==h) return 3;
         if (y>=h-3 || (x>=0 && x<32 && z>=0 && z<32)) return 2;
         // Sparse deterministic ore veins under the surface.
+#ifdef MICROCRAFT_REFERENCE_TERRAIN
         uint32_t ore=noise(floorDiv(x,3),floorDiv(z,3)) ^ hash(y/3+seed);
+#else
+        uint32_t ore=cachedOre ^ hash(y/3+seed);
+#endif
         if (ore%59==0) return 225; // coal_ore, append-only palette
         return 4;
     }
@@ -60,10 +79,14 @@ struct World {
     }
     uint16_t stored(unsigned i) const { return values[i] | ((keys[i]>>22)<<8); }
     uint16_t get(unsigned slot,unsigned index) const {
+#ifndef MICROCRAFT_REFERENCE_TERRAIN
+        if(!chunks[slot].edits) return base(slot,index);
+#endif
         uint32_t key=(slot<<15)|index; unsigned i=locate(key);
         return i<CAPACITY && keys[i]<DELETED && (keys[i]&KEY_MASK)==key ? stored(i) : base(slot,index);
     }
     void erase(unsigned hole) {
+        --chunks[(keys[hole]&KEY_MASK)>>15].edits;
         // Back-shift deletion: repeated travel must not fill the table with tombstones.
         unsigned next=(hole+1)&(CAPACITY-1);
         while(keys[next]!=EMPTY) {
@@ -83,7 +106,7 @@ struct World {
             if(exists) erase(i);
         } else {
             if(!exists && (used>=CAPACITY*3/4 || i==CAPACITY)) return false;
-            if(!exists) ++used;
+            if(!exists) { ++used; ++chunks[slot].edits; }
             keys[i]=key | (uint32_t(value>>8)<<22); values[i]=value;
         }
         if(dirty) { chunks[slot].dirty=true; changed[slot/8]|=1u<<(slot%8); }

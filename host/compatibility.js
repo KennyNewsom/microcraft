@@ -63,7 +63,7 @@ function installIdentity (server, identities) {
 
 function startProxy (network, backendPort, identity, onFailure) {
   const config = path.join(directory, 'microcraft.yml')
-  fs.writeFileSync(config, `bind-address: ${JSON.stringify(`${network.host}:${network.port}`)}\ntarget-address: 127.0.0.1:${backendPort}\ntarget-version: '26.1'\nproxy-online-mode: ${network.onlineMode}\nauth-method: NONE\nchat-signing: true\nignore-protocol-translation-errors: false\nwildcard-domain-handling: NONE\n`)
+  fs.writeFileSync(config, `bind-address: ${JSON.stringify(`${network.host}:${network.port}`)}\ntarget-address: 127.0.0.1:${backendPort}\ntarget-version: '26.1'\nproxy-online-mode: ${network.onlineMode}\nauth-method: NONE\nchat-signing: true\nignore-protocol-translation-errors: false\nwildcard-domain-handling: NONE\ncompression-threshold: 256\n`)
   const child = spawn(javaExecutable(), ['-Xmx512m', '-jar', jar, 'config', config], {
     cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, MICROCRAFT_IDENTITY_URL: identity.url, MICROCRAFT_IDENTITY_TOKEN: identity.token }

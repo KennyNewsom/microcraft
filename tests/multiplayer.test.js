@@ -16,6 +16,8 @@ test('four clients see players and shared edits; fifth refused and freed slot re
       const c = mc.createClient({ host: '127.0.0.1', port: server.socketServer.address().port,
         username: name, auth: 'offline', version: '26.1' })
       c.skinMetadata = []
+      c.clockUpdates = []
+      c.on('update_time', packet => c.clockUpdates.push(packet))
       c.on('entity_metadata', packet => c.skinMetadata.push(packet))
       clients.push(c); return c
     }
@@ -23,6 +25,13 @@ test('four clients see players and shared edits; fifth refused and freed slot re
     const seesB = once(a, 'spawn_entity')
     const b = connect('PlayerTwo'); const seesA = once(b, 'spawn_entity')
     const [posB] = await once(b, 'position'); assert.equal(posB.x, 18)
+    assert.equal(a.clockUpdates.length, 1)
+    assert.deepEqual(b.clockUpdates, a.clockUpdates, 'Later joiners receive the same frozen daylight')
+    const clock = a.clockUpdates[0].clockUpdates[0]
+    assert.equal(clock.id, 0)
+    assert.equal(BigInt(clock.totalTicks), 6000n)
+    assert.equal(clock.partialTick, 0)
+    assert.equal(clock.rate, 0, 'Clients must not advance the daylight clock')
     assert.equal((await seesA)[0].entityId, 100)
     assert.equal((await seesB)[0].entityId, 101)
     b.on('entity_teleport', () => assert.fail('Legacy teleport packet must never be sent'))

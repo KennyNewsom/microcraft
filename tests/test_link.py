@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import unittest
+import struct
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'host'))
@@ -28,6 +29,22 @@ class Port:
 
 
 class Tests(unittest.TestCase):
+    @patch('link.time.sleep')
+    def test_interface_rate_override_preserves_target_rate(self, _):
+        port = Port()
+        original_write = port.write
+        handshake = []
+        def write(data):
+            if data[4] == 1:
+                handshake.append(struct.unpack_from('<I', data, 20)[0])
+            return original_write(data)
+        port.write = write
+        report = Link(port).boot(460800, host_baud=457143)
+        self.assertEqual(handshake, [460800])
+        self.assertEqual(port.baudrate, 457143)
+        self.assertEqual(report['host_baud'], 457143)
+        self.assertEqual(report['packets'], 10000)
+
     @patch('link.time.sleep')
     def test_all_10000_before_start(self, _):
         port = Port()
@@ -64,6 +81,26 @@ class Tests(unittest.TestCase):
             frame(2, 0, bytes(49))
         with self.assertRaises(LinkError):
             decode(bytes(64))
+
+    def test_bulk_chunk_crc_order_and_missing_frame_fail_closed(self):
+        def packets():
+            result=[]; cursor=0
+            while cursor<32768:
+                payload=bytearray(48); length=min(255,32768-cursor); cursor+=length
+                struct.pack_into('<HBBH',payload,0,cursor,1,length,3065)
+                result.append(frame(146,1,payload))
+            return result
+        class StreamPort(Port):
+            def __init__(self, messages): super().__init__(); self.messages=messages
+            def write(self, data): self.buffer=b''.join(self.messages); return len(data)
+        messages=packets(); link=Link(StreamPort(messages),timeout=.001); link.ready=True
+        self.assertEqual(len(list(link.stream_chunk(0))),len(messages))
+        for bad in (messages[1:], messages[:4]+messages[5:], messages[:3]+messages[2:],
+                    messages[:-1], [messages[0][:-1]+bytes([messages[0][-1]^1])]+messages[1:]):
+            with self.subTest(frames=len(bad)):
+                link=Link(StreamPort(bad),timeout=.001); link.ready=True
+                with self.assertRaises(LinkError): list(link.stream_chunk(0))
+                self.assertTrue(link.failed); self.assertFalse(link.ready)
 
 
 if __name__ == '__main__':

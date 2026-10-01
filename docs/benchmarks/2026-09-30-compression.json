@@ -1,0 +1,171 @@
+{
+  "date": "2026-09-30",
+  "baud": 230400,
+  "legacy": {
+    "gate": {
+      "packets": 10000,
+      "baud": 230400,
+      "host_baud": 230400,
+      "seconds": 64.794,
+      "wire_bytes_per_second": 19755.0
+    },
+    "capability": [
+      83164,
+      3685,
+      7,
+      4,
+      128,
+      100,
+      0,
+      12288,
+      16384,
+      344,
+      1,
+      3
+    ],
+    "streaming": true,
+    "compression": 0,
+    "stack_used": 376,
+    "capacity_test": false,
+    "descriptor_load_ms": 169.0111000025354,
+    "full_25_chunk_stream_ms": 7146.1412999997265,
+    "samples": [
+      {
+        "chunk": [
+          0,
+          0
+        ],
+        "generation_ms": 40.751765625,
+        "stream_ms": 241.39509999804432,
+        "sha256": "99a926cc9b97d38a6d0b2a36d26f126b0bd5903b191d72ce72ad8c408f951305",
+        "compression": {
+          "raw_bytes": 65536,
+          "encoded_bytes": 3072,
+          "wire_bytes": 4480,
+          "frames": 69
+        }
+      },
+      {
+        "chunk": [
+          -2,
+          -2
+        ],
+        "generation_ms": 43.14065625,
+        "stream_ms": 300.04720000215457,
+        "sha256": "299d0a66c95843aba6e85cac84b42296a50594291144927f004696d4cc86628e",
+        "compression": {
+          "raw_bytes": 65536,
+          "encoded_bytes": 3984,
+          "wire_bytes": 5760,
+          "frames": 89
+        }
+      },
+      {
+        "chunk": [
+          2,
+          2
+        ],
+        "generation_ms": 42.18425,
+        "stream_ms": 296.45280000113416,
+        "sha256": "d75e7f5ebaecf6ff79a125125d2e846bdb30a81d89a93f52ca58d4d9875625f8",
+        "compression": {
+          "raw_bytes": 65536,
+          "encoded_bytes": 3948,
+          "wire_bytes": 5696,
+          "frames": 88
+        }
+      }
+    ]
+  },
+  "compressed": {
+    "gate": {
+      "packets": 10000,
+      "baud": 230400,
+      "host_baud": 230400,
+      "seconds": 64.799,
+      "wire_bytes_per_second": 19753.4
+    },
+    "capability": [
+      83164,
+      3685,
+      7,
+      4,
+      128,
+      100,
+      0,
+      12288,
+      16384,
+      344,
+      1,
+      3
+    ],
+    "streaming": true,
+    "compression": 3,
+    "stack_used": 656,
+    "capacity_test": true,
+    "descriptor_load_ms": 169.34179999952903,
+    "full_25_chunk_stream_ms": 2617.557500001567,
+    "samples": [
+      {
+        "chunk": [
+          0,
+          0
+        ],
+        "generation_ms": 40.134890625,
+        "stream_ms": 37.25699999995413,
+        "sha256": "99a926cc9b97d38a6d0b2a36d26f126b0bd5903b191d72ce72ad8c408f951305",
+        "compression": {
+          "raw_bytes": 65536,
+          "encoded_bytes": 14,
+          "wire_bytes": 128,
+          "frames": 1
+        }
+      },
+      {
+        "chunk": [
+          -2,
+          -2
+        ],
+        "generation_ms": 43.12978125,
+        "stream_ms": 193.94440000178292,
+        "sha256": "299d0a66c95843aba6e85cac84b42296a50594291144927f004696d4cc86628e",
+        "compression": {
+          "raw_bytes": 65536,
+          "encoded_bytes": 2410,
+          "wire_bytes": 3584,
+          "frames": 55
+        }
+      },
+      {
+        "chunk": [
+          2,
+          2
+        ],
+        "generation_ms": 41.082078125,
+        "stream_ms": 143.29600000201026,
+        "sha256": "d75e7f5ebaecf6ff79a125125d2e846bdb30a81d89a93f52ca58d4d9875625f8",
+        "compression": {
+          "raw_bytes": 65536,
+          "encoded_bytes": 1649,
+          "wire_bytes": 2496,
+          "frames": 38
+        }
+      }
+    ]
+  },
+  "view_speedup": 2.730079969588232,
+  "memory": {
+    "runtime": "bare-metal",
+    "physical_ram": 131072,
+    "static_ram": 83924,
+    "reserved_stack": 8192,
+    "free_gap": 38956,
+    "edit_limit": 12288,
+    "cache_buckets": 16384
+  },
+  "restore_packet_comparison": {
+    "edits": 12288,
+    "legacy_frames": 1118,
+    "compressed_frames": 878
+  }
+}

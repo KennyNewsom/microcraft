@@ -173,6 +173,12 @@ function createGame (rpc, unused, options = {}) {
       const login = data.loginPacket
       client.write('login', { ...login, entityId: session.entityId, maxPlayers: 4, viewDistance: 2,
         simulationDistance: 2, enforcesSecureChat: secureChat, worldState: { ...login.worldState, gamemode: 'creative' } })
+      // 26.1 uses registry-backed clocks, not the old negative day-time field.
+      // A zero rate stops client extrapolation, including for late joiners.
+      client.write('update_time', { age: 0n, clockUpdates: [{
+        id: data.loginPacket.dimensionCodec['minecraft:world_clock'].entries.findIndex(e => e.key === 'minecraft:overworld'),
+        totalTicks: 6000, partialTick: 0, rate: 0
+      }] })
       client.write('abilities', { flags: 15, flyingSpeed: 0.05, walkingSpeed: 0.1 })
       client.write('spawn_position', { globalPos: { dimensionName: 'minecraft:overworld',
         location: { x: 16, y: 10, z: 16 } }, yaw: 0, pitch: 0 })

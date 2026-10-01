@@ -3,6 +3,7 @@ import secrets
 import struct
 import time
 import zlib
+from serial_codec import decode_chunk_frame
 
 PACKETS = 10_000
 SIZE = 64
@@ -65,13 +66,13 @@ class Link:
             self.ready = False
             raise
 
-    def boot(self, baud=1_000_000, progress=lambda n: None):
+    def boot(self, baud=1_000_000, progress=lambda n: None, *, host_baud=None):
         if self.sequence or self.ready:
             raise LinkError('Already booted; reset the board for a new test')
         nonce = secrets.token_bytes(8)
         self.exchange(frame(1, 0, nonce + struct.pack('<I', baud)), echo=True)
         time.sleep(0.25)
-        self.port.baudrate = baud
+        self.port.baudrate = baud if host_baud is None else host_baud
         start = time.monotonic()
         for seq in range(1, PACKETS + 1):
             # Includes random bytes, all-zero, all-one, alternating and ramp patterns.
@@ -85,7 +86,7 @@ class Link:
         self.sequence = PACKETS + 1
         self.exchange(frame(3, self.sequence, nonce))
         self.ready = True
-        return {'packets': PACKETS, 'baud': baud, 'seconds': round(elapsed, 3),
+        return {'packets': PACKETS, 'baud': baud, 'host_baud': self.port.baudrate, 'seconds': round(elapsed, 3),
                 'wire_bytes_per_second': round(PACKETS * SIZE * 2 / elapsed, 1)}
 
     def command(self, op, payload=b''):
@@ -93,3 +94,66 @@ class Link:
             raise LinkError('Startup gate has not passed')
         self.sequence += 1
         return self.exchange(frame(op, self.sequence, payload))
+
+    def compressed_chunk(self, slot, state_count):
+        """Revision-7 chunk stream with bounded token decoding and strict integrity."""
+        if not self.ready or self.failed:
+            raise LinkError('Startup gate has not passed')
+        self.sequence += 1
+        result, frames, encoded = bytearray(), 0, 0
+        try:
+            if self.port.write(frame(19, self.sequence, bytes([slot, 0, 0]))) != SIZE:
+                raise LinkError('Short serial write')
+            while len(result) < 65536:
+                deadline = time.monotonic()+self.timeout
+                received = bytearray()
+                while len(received) < SIZE and time.monotonic() < deadline:
+                    received.extend(self.port.read(SIZE-len(received)))
+                op, sequence, payload = decode(received)
+                if op != 147 or sequence != self.sequence:
+                    raise LinkError('Wrong compressed opcode or sequence')
+                decode_chunk_frame(payload, result, state_count)
+                frames += 1
+                encoded += payload[2]
+            self.last_chunk_stats = {'raw_bytes': len(result), 'encoded_bytes': encoded,
+                                     'wire_bytes': (frames+1)*SIZE, 'frames': frames}
+            return bytes(result)
+        except BaseException:
+            self.failed = True
+            self.ready = False
+            raise
+
+    def stream_chunk(self, slot):
+        """One request, ordered CRC-protected response frames until cursor 32768."""
+        if not self.ready or self.failed:
+            raise LinkError('Startup gate has not passed')
+        self.sequence += 1
+        cursor = 0
+        frames, encoded = 0, 0
+        try:
+            if self.port.write(frame(18, self.sequence, bytes([slot, 0, 0]))) != SIZE:
+                raise LinkError('Short serial write')
+            while cursor < 32768:
+                deadline = time.monotonic() + self.timeout
+                received = bytearray()
+                while len(received) < SIZE and time.monotonic() < deadline:
+                    received.extend(self.port.read(SIZE-len(received)))
+                op, sequence, payload = decode(received)
+                if op != 146 or sequence != self.sequence:
+                    raise LinkError('Wrong streamed opcode or sequence')
+                next_cursor, count = struct.unpack_from('<HB', payload)
+                if not 1 <= count <= 15 or not cursor < next_cursor <= 32768:
+                    raise LinkError('Invalid streamed cursor or count')
+                lengths = [payload[3+i*3] for i in range(count)]
+                if not all(lengths) or cursor+sum(lengths) != next_cursor:
+                    raise LinkError('Dropped, duplicated, or reordered chunk frame')
+                cursor = next_cursor
+                frames += 1
+                encoded += count*3
+                yield payload
+            self.last_chunk_stats = {'raw_bytes': 65536, 'encoded_bytes': encoded,
+                                     'wire_bytes': (frames+1)*SIZE, 'frames': frames}
+        except BaseException:
+            self.failed = True
+            self.ready = False
+            raise
